@@ -1,0 +1,1581 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{mathtools,amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage{cleveref}
+
+% Theorem environments
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{axiom}[theorem]{Axiom}
+\newtheorem{assumption}[theorem]{Assumption}
+\newtheorem{example}[theorem]{Example}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\defeq}{\vcentcolon=}
+\newcommand{\nf}{\mathrm{nf}}
+
+\title{Normalization Confluence for\\Registry-Governed Stream Processing}
+
+\author{
+Dayna Blackwell\\
+\small\href{mailto:dayna@blackwell-systems.com}{dayna@blackwell-systems.com}\\
+\small Licensed under CC-BY-4.0.}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Coordination-free convergence in distributed systems has been achieved through
+two structural regimes: \emph{operation commutativity} (CRDTs), where
+operations commute by construction, and \emph{invariant confluence}
+(I-confluence), where all orderings preserve application invariants.  We
+identify a third regime---\emph{normalization confluence}---in which
+operations may be non-commutative and may violate invariants, but convergence
+is restored through a compensation operator that normalizes states to
+validity.
+
+We formalize this regime by introducing \emph{registry-governed stream
+processing}, where an external registry of invariant predicates defines valid
+states and a compensation operator repairs violations.  We construct a
+\emph{governance rewrite system} whose configurations pair a state with a
+buffer of pending events, and whose rewrite rules include both event
+application (in any causality-respecting order) and compensation.  Two
+structural conditions---\emph{well-founded compensation} (WFC) and
+\emph{compensation commutativity} (CC)---ensure termination and confluence
+respectively.  Under both, Newman's Lemma guarantees unique normal forms: any
+two processors consuming the same events agree on a valid state, regardless
+of the order in which they apply those events.  A third condition---%
+\emph{uniformly bounded compensation} (UBC)---yields constant per-event
+overhead and $O(\log n)$ total cost matching conventional stream processing.
+We show UBC is tight: without it, compensation depth grows without limit.
+We show CC is necessary: without it, different orders can reach different
+valid states.
+
+Compensation commutativity is strictly weaker than operation commutativity:
+operations need not commute, only their compensated results.  The gap between
+these two conditions is precisely the design space that normalization
+confluence occupies.
+
+To make CC practically verifiable, we develop a \emph{verification calculus}
+that reduces the global CC obligation to local checks.  An \emph{invariant
+footprint} mapping identifies which invariants each event can affect, and a
+\emph{decomposable repair} condition ensures per-invariant repairs commute.
+Together, these yield sufficient conditions for CC that can be checked
+per-event-pair rather than globally, and a product composition theorem that
+enables modular verification of multi-registry systems.
+\end{abstract}
+
+\medskip\noindent\textbf{Keywords:} Stream Processing, Normalization
+Confluence, Semantic Consistency, Rewrite Systems, Newman's Lemma,
+Compensation Commutativity, Distributed Systems
+
+%========================================
+\section{Introduction}
+\label{sec:intro}
+
+Coordination-free convergence---the ability of distributed processors to agree
+on a result without explicit synchronization---is among the central goals of
+distributed systems design.  The literature has identified two structural
+regimes under which it is achievable:
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Operation commutativity} (CRDTs~\cite{shapiro2011crdt}):
+  Operations are designed to commute algebraically.  Any application order
+  produces the same state.
+\item \textbf{Invariant confluence}
+  (I-confluence~\cite{bailis2014coordination}): Operations individually
+  preserve application invariants under all orderings.  No repair is needed
+  because validity is never violated.
+\end{enumerate}
+
+Both regimes achieve convergence by \emph{preventing} inconsistency.  CRDTs
+prevent it through algebraic design; I-confluence prevents it through
+invariant-preserving operation selection.  Neither accommodates operations that
+are non-commutative \emph{and} may violate invariants---yet such operations
+are pervasive in practice.  An order processing pipeline, for example, must
+handle events (orders, payments, inventory adjustments, shipments) that do not
+commute and that individually violate business rules (no shipment without
+payment, no negative inventory).
+
+We formalize the missing piece as a \emph{registry}: any authoritative
+definition of validity external to the stream processor.  Registries already
+exist in practice under various names---policy engines, constraint services,
+schema validators, compliance controllers---but their role in convergence has
+not been characterized formally.  Our model abstracts these as a tuple of
+invariant predicates and a compensation operator.
+
+This paper identifies a third regime: \textbf{normalization confluence}.
+Operations may be non-commutative.  They may violate invariants.  But a
+compensation operator normalizes states to validity after each operation, and
+the key structural condition is that these \emph{compensated results}
+commute---even though the operations themselves do not.  Under this condition,
+together with well-founded compensation, Newman's Lemma guarantees that all
+causality-respecting processing orders reach the same valid state.
+
+The three regimes form a hierarchy of progressively weaker requirements:
+\begin{enumerate}[leftmargin=*,nosep]
+\item Operation commutativity $\implies$ compensation commutativity
+  $\implies$ convergence.
+\item Invariant confluence $\implies$ no compensation needed $\implies$
+  convergence.
+\item Compensation commutativity alone $\implies$ convergence (this paper).
+\end{enumerate}
+Normalization confluence occupies the design space between CRDT commutativity
+(which requires operations to commute) and I-confluence (which requires
+operations to preserve invariants).  It permits operations that satisfy
+neither, provided their compensated results agree.
+
+\subsection{The Core Insight}
+
+Convergence is conventionally treated as a property of \emph{operations}:
+operations must be designed to commute, or designed to preserve invariants.
+Our result reframes convergence as a property of the \emph{normalization
+rewrite system}: the system that interleaves event application with invariant
+repair.  The operations themselves need no special algebraic structure.  What
+matters is that the rewrite system---encompassing both application and
+compensation---is terminating and confluent.  This shifts the design burden
+from operation algebra to compensation design.
+
+\subsection{Contributions}
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Normalization confluence regime} (\Cref{sec:model}): A
+  governance rewrite system on configurations $(\sigma, B)$ pairing a state
+  with a pending-event buffer, with rules for both event application and
+  compensation.  Nondeterminism arises from the choice of which enabled event
+  to apply next.
+\item \textbf{Convergence theorem} (\Cref{sec:convergence}): Proof that
+  processors consuming the same events converge to the same valid state,
+  regardless of application order, under well-founded compensation (WFC) and
+  compensation commutativity (CC).
+\item \textbf{Necessity of both conditions} (\Cref{sec:necessity}):
+  Counterexamples demonstrating that without UBC, compensation depth is
+  unbounded, and without CC, different orders reach different valid states.
+\item \textbf{Complexity analysis} (\Cref{sec:complexity}): Proof that
+  registry governance adds $O(\log n)$ overhead per event under UBC,
+  preserving practical scalability.
+\item \textbf{Three-regime characterization} (\Cref{sec:discussion}):
+  Together with CRDTs and invariant confluence, a partition of the
+  coordination-free design space into operation commutativity, invariant
+  confluence, and normalization confluence.
+\item \textbf{Verification calculus} (\Cref{sec:calculus}): Sufficient
+  conditions---invariant footprints and decomposable repair---that reduce the
+  global CC obligation to local, per-event-pair checks.  Product composition
+  theorems enable modular verification of multi-registry systems.
+\end{enumerate}
+
+%========================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Conflict-Free Replicated Data Types.}
+CRDTs~\cite{shapiro2011crdt} guarantee convergence through algebraic
+structure: replicas that apply the same set of commutative, associative,
+idempotent operations converge to the same state.  Our setting is strictly more
+general in one dimension: we do not require operations to commute, only that
+their \emph{compensated results} commute.  This permits operations that
+individually violate invariants, which CRDTs cannot accommodate.  Conversely,
+CRDTs require no finiteness or boundedness assumptions.  Neither approach
+dominates: CRDTs are preferable when operations can be designed to commute,
+while registry governance is preferable when business rules constrain valid
+states in ways that preclude commutativity.
+
+\paragraph{CALM and Coordination Avoidance.}
+The CALM theorem~\cite{hellerstein2010declarative,ameloot2013relational}
+establishes that monotone programs can achieve consistency without coordination.
+Bailis et al.~\cite{bailis2014coordination} extend this to identify
+\emph{invariant confluence}: a set of operations is invariant-confluent if all
+possible orderings preserve application invariants.  When invariant confluence
+holds, no compensation is needed.  Our framework addresses the complement:
+operations that are \emph{not} invariant-confluent.  We prove that
+compensation restores convergence under bounded depth and commutativity.
+Together, invariant confluence and our result partition the design space
+(\Cref{sec:design-space}).
+
+\paragraph{Abstract Rewrite Systems.}
+Newman's Lemma~\cite{newman1942} states that a terminating abstract rewrite
+system is confluent if and only if it is locally confluent.  The lemma has been
+applied extensively in term rewriting~\cite{baader1998term} and lambda
+calculus.  Our contribution is its application to a rewrite system with
+\emph{genuine nondeterminism}: the choice of which event to apply next from a
+buffer of enabled events.  Local confluence is nontrivial because different
+application orders produce different intermediate states; our compensation
+commutativity axiom is the condition that closes the resulting critical pairs.
+
+\paragraph{Eventual Consistency.}
+Classical eventual consistency~\cite{vogels2009eventually} guarantees that
+replicas converge given sufficient time without new updates.  It does not
+address whether converged states satisfy application-level invariants---only
+that replicas agree on the same value.  Our work guarantees convergence to
+\emph{valid} states under continuous event arrival.
+
+\paragraph{Stream Processing Theory.}
+Formal models of stream processing include synchronous
+dataflow~\cite{lee1987synchronous}, Kahn process
+networks~\cite{kahn1974semantics}, and the windowed computation models
+underlying modern engines~\cite{akidau2015dataflow}.  These focus on
+operational semantics---what a stream processor computes---rather than semantic
+validity of computed states.  Our registry layer sits above any of these
+operational models.
+
+\paragraph{Saga Pattern and Compensating Transactions.}
+The saga pattern~\cite{garcia1987sagas} decomposes long-lived transactions into
+sequences of local transactions with compensating actions for rollback.  Our
+compensation operator generalizes this: rather than undoing individual
+operations, it repairs arbitrary invariant violations in the current state.
+The convergence guarantee we prove---that different interleaving orders of
+application and compensation reach the same valid state---has no analogue in
+the saga literature.
+
+%========================================
+\section{Registry-Governed Stream Model}
+\label{sec:model}
+
+\subsection{Registries and Semantic Projection}
+
+\begin{definition}[Registry]
+\label{def:registry}
+A \emph{registry} is a tuple $R = (\Sigma_R, I_R, V_R, \rho_R)$ where:
+\begin{itemize}[leftmargin=*,nosep]
+\item $\Sigma_R$ is a set of \emph{semantic states},
+\item $I_R = \{\psi_1, \ldots, \psi_k\}$ is a finite set of \emph{invariant
+  predicates} $\psi_i: \Sigma_R \to \{\top, \bot\}$,
+\item $V_R: \Sigma_R \to \{\top, \bot\}$ is the \emph{validation function}
+  defined by $V_R(\sigma) = \bigwedge_{i=1}^k \psi_i(\sigma)$,
+\item $\rho_R: \Sigma_R \to \Sigma_R$ is a \emph{compensation operator}
+  satisfying: if $V_R(\sigma) = \bot$, then $\Phi(\rho_R(\sigma)) < \Phi(\sigma)$
+  for a well-founded measure $\Phi$ (defined below); if
+  $V_R(\sigma) = \top$, then $\rho_R(\sigma) = \sigma$.
+\end{itemize}
+\end{definition}
+
+\begin{definition}[Semantic Projection]
+\label{def:projection}
+A registry is defined over a semantic state space $\Sigma_R$ together with
+a \emph{projection} $\pi: \Sigma_{\mathrm{raw}} \to \Sigma_R$ from
+unbounded raw states to semantic states.  All invariants, validation, and
+compensation are defined on $\Sigma_R$.  Two raw states $s_1, s_2$ are
+\emph{registry-indistinguishable} if $\pi(s_1) = \pi(s_2)$.
+The application function $\mathrm{apply}: \mathcal{E} \times \Sigma_R \to \Sigma_R$
+is understood as ``apply then project'': given a raw-level application
+$\mathrm{apply}_{\mathrm{raw}}: \mathcal{E} \times \Sigma_{\mathrm{raw}} \to \Sigma_{\mathrm{raw}}$,
+the semantic application is
+$\mathrm{apply}(e, \sigma) = \pi(\mathrm{apply}_{\mathrm{raw}}(e, s))$ for
+any $s$ with $\pi(s) = \sigma$.  Well-definedness requires that the projected
+result is independent of the representative~$s$.
+\end{definition}
+
+\begin{remark}[Scope of Finiteness]
+\label{rem:scope}
+Finiteness is required of the \emph{semantic} state space $\Sigma_R$, not the
+raw data.  An order-processing registry tracking status across states
+\emph{pending}, \emph{paid}, \emph{shipped}, \emph{delivered},
+\emph{cancelled} has $|\Sigma_R| = 5$ regardless of how many bytes the
+underlying order record occupies.  More generally, any domain whose logic is
+captured by $k$ boolean predicates has $|\Sigma_R| \leq 2^k$: the semantic
+states are the equivalence classes under the invariant vector
+$(\psi_1(\sigma), \ldots, \psi_k(\sigma))$.  Business domains are
+overwhelmingly of this form.
+\end{remark}
+
+\begin{definition}[Registry Equivalence]
+\label{def:equiv}
+Two states $\sigma_1, \sigma_2 \in \Sigma_R$ are \emph{registry equivalent},
+written $\sigma_1 \approx_R \sigma_2$, if they satisfy the same invariants:
+$\forall \psi \in I_R: \psi(\sigma_1) = \psi(\sigma_2)$.
+\end{definition}
+
+\begin{lemma}
+\label{lem:equiv-relation}
+Registry equivalence $\approx_R$ is an equivalence relation on~$\Sigma_R$.
+\end{lemma}
+\begin{proof}
+Each condition $\psi(\sigma_1) = \psi(\sigma_2)$ is reflexive, symmetric, and
+transitive.  A conjunction of equivalence relations is an equivalence relation.
+\end{proof}
+
+\subsection{Well-Founded and Uniformly Bounded Compensation}
+
+Termination and complexity require two properties of the compensation
+operator, which we state separately because they play different roles.
+
+\begin{axiom}[Well-Founded Compensation (WFC)]
+\label{ax:wfc}
+There exists a \emph{compensation measure}
+$\Phi: \Sigma_R \to \mathbb{N}$ such that every compensation step strictly
+decreases $\Phi$: if $V_R(\sigma) = \bot$, then
+$\Phi(\rho_R(\sigma)) < \Phi(\sigma)$.
+\end{axiom}
+
+WFC guarantees that compensation terminates from any state: iterated
+application of~$\rho_R$ reaches a valid state in finitely many steps.
+
+\begin{axiom}[Uniformly Bounded Compensation (UBC)]
+\label{ax:ubc}
+The compensation measure $\Phi$ from \Cref{ax:wfc} is uniformly bounded:
+there exists $M \in \mathbb{N}$ such that $\Phi(\sigma) \leq M$ for all
+$\sigma \in \Sigma_R$.
+\end{axiom}
+
+UBC strengthens WFC by bounding compensation depth \emph{uniformly} across
+all states.  WFC alone suffices for termination and for defining iterated
+compensation~$\rho_R^*$.  UBC is additionally needed for the uniform
+step bound in the termination lemma and the constant per-event compensation
+cost in the complexity analysis.
+
+\begin{lemma}[Finite State Spaces Imply UBC]
+\label{lem:finite-implies-ubc}
+If $|\Sigma_R| < \infty$ and WFC holds, then UBC holds with
+$M = \max_{\sigma \in \Sigma_R} \Phi(\sigma)$.
+\end{lemma}
+\begin{proof}
+The maximum exists because $\Sigma_R$ is finite.
+\end{proof}
+
+\begin{remark}
+WFC is the load-bearing condition for termination; UBC is the load-bearing
+condition for uniform step bounds and per-event complexity.  Finiteness of
+$\Sigma_R$ is a convenient sufficient condition for both, but UBC does not
+require full finiteness of $\Sigma_R$; it requires only bounded compensation
+height.  The counterexample
+in \Cref{sec:necessity} satisfies WFC (compensation terminates for every fixed
+event set) but violates UBC (compensation depth grows without bound as event
+sets grow).
+\end{remark}
+
+\subsection{Events and Streams}
+
+\begin{definition}[Event Stream]
+\label{def:stream}
+An \emph{event stream} $\mathcal{S} = \langle e_1, e_2, \ldots \rangle$ is a
+(possibly infinite) sequence of events drawn from event space $\mathcal{E}$.
+Each event $e_i$ carries a unique identifier $\mathrm{id}(e_i)$, a timestamp
+$\tau(e_i)$, and a set of causal dependencies
+$\mathrm{deps}(e_i) \subseteq \{e_1, \ldots, e_{i-1}\}$.  An
+\emph{application function}
+$\mathrm{apply}: \mathcal{E} \times \Sigma_R \to \Sigma_R$ maps each event
+and current state to a new state.
+\end{definition}
+
+\begin{definition}[Causality-Respecting Order]
+\label{def:causal-order}
+An ordering $\pi$ of a finite event set $E$ \emph{respects causality} if
+whenever $e_i \in \mathrm{deps}(e_j)$, event $e_i$ precedes $e_j$
+under~$\pi$.  Multiple causality-respecting orders may exist for the same
+event set.
+\end{definition}
+
+\subsection{Governance Rewrite System}
+
+We now define the rewrite system that is the core technical device of this
+paper.  Unlike the approach of fixing a canonical event order---which would make
+agreement trivial by determinism---our rewrite system admits genuine
+nondeterminism in the choice of which event to apply next.
+
+\begin{assumption}[Causal Closure]
+\label{as:closure}
+The received event set $E$ is causally closed: for every $e \in E$,
+$\mathrm{deps}(e) \subseteq E$.
+\end{assumption}
+
+Under causal closure, every dependency of every event in~$E$ is either still
+pending in~$B$ or has already been applied (removed from~$B$).  This makes the
+enabled predicate below well-defined.
+
+\begin{definition}[Configuration]
+\label{def:config}
+A \emph{configuration} is a pair $(\sigma, B)$ where $\sigma \in \Sigma_R$ is
+a semantic state and $B \subseteq E$ is a set of events that have been
+received but not yet applied.  An event $e \in B$ is \emph{enabled} if
+$\mathrm{deps}(e) \cap B = \varnothing$ (all causal dependencies of $e$ have
+already been applied).
+\end{definition}
+
+\begin{definition}[Governance Rewrite System]
+\label{def:grs}
+Fix a finite set of received events~$E$ and initial state~$\sigma_0$.  The
+\emph{governance rewrite system} $\mathcal{G} = (\mathcal{C}, \to)$ operates
+on configurations $(\sigma, B)$ with $\sigma \in \Sigma_R$ and
+$B \subseteq E$.  The rewrite relation $\to$ is the union of:
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Apply step:}
+  $(\sigma, B) \to (\mathrm{apply}(e, \sigma), B \setminus \{e\})$ whenever
+  $e \in B$ is enabled.
+\item \textbf{Compensation step:}
+  $(\sigma, B) \to (\rho_R(\sigma), B)$ whenever $V_R(\sigma) = \bot$.
+\end{enumerate}
+A configuration is in \emph{normal form} if $B = \varnothing$ and
+$V_R(\sigma) = \top$.
+\end{definition}
+
+The nondeterminism is genuine: when multiple events are enabled and the state
+is invalid, a configuration may step via different apply rules (choosing
+different events) or via the compensation rule.  Confluence of this system
+means that the choice does not affect the final result.
+
+\subsection{Compensation Commutativity}
+
+Local confluence of $\mathcal{G}$ is nontrivial.  Two critical pair types
+arise: (1)~two apply steps choosing different events, and (2)~an apply step
+versus a compensation step.  The following axiom ensures both types close.
+
+\begin{definition}[Iterated Compensation]
+\label{def:rhostar}
+Under WFC (\Cref{ax:wfc}), define $\rho_R^*(\sigma)$ to be the unique state
+obtained by iterating $\rho_R$ from~$\sigma$ until reaching validity:
+$\rho_R^*(\sigma) = \rho_R^{m}(\sigma)$ for the least $m$ such that
+$V_R(\rho_R^{m}(\sigma)) = \top$.  Existence and finiteness of~$m$ follow from
+WFC; uniqueness follows from determinism of~$\rho_R$.
+\end{definition}
+
+\begin{axiom}[Compensation Commutativity (CC)]
+\label{ax:cc}
+The registry $R$ satisfies:
+\begin{enumerate}[leftmargin=*,nosep]
+\item[\textbf{(CC1)}] \textbf{Order independence.}\; For any
+  $\sigma \in \Sigma_R$ and events $e_1, e_2$ that are causally independent
+  and simultaneously enabled in some configuration $(\sigma, B)$:
+  \[
+  \rho_R^*(\mathrm{apply}(e_2,\, \rho_R^*(\mathrm{apply}(e_1, \sigma))))
+  \;=\;
+  \rho_R^*(\mathrm{apply}(e_1,\, \rho_R^*(\mathrm{apply}(e_2, \sigma)))).
+  \]
+\item[\textbf{(CC2)}] \textbf{Compensation absorption.}\; For any
+  $\sigma \in \Sigma_R$ with $V_R(\sigma) = \bot$ and any enabled event~$e$:
+  \[
+  \rho_R^*(\mathrm{apply}(e, \sigma))
+  \;=\;
+  \rho_R^*(\mathrm{apply}(e, \rho_R(\sigma))).
+  \]
+\end{enumerate}
+\end{axiom}
+
+\begin{remark}[Relationship to CRDT Commutativity]
+\label{rem:crdt-comparison}
+CRDT commutativity requires
+$\mathrm{apply}(e_1, \mathrm{apply}(e_2, \sigma)) =
+\mathrm{apply}(e_2, \mathrm{apply}(e_1, \sigma))$ for all~$\sigma$.  This
+implies CC1 (take $\rho_R^* = \mathrm{id}$ when all states are valid) and
+trivially satisfies CC2 (when all states are valid, compensation never fires).
+Compensation commutativity is strictly weaker: it permits operations that
+individually violate invariants, requiring only that the \emph{repaired}
+results commute.  The gap between operation commutativity and compensation
+commutativity is precisely the space our result occupies.
+\end{remark}
+
+\begin{remark}[Compensation Absorption]
+\label{rem:absorption}
+Condition CC2 states that compensating an invalid state before applying an
+event does not change the final compensated result.  Intuitively, the
+repair that compensation performs ``would have been performed anyway'' during
+the post-application compensation phase.  CC2 holds whenever compensation
+repairs invariant violations in a way that is determined by the violation
+pattern rather than the path taken to reach the violation.  By induction on
+the number of compensation steps, CC2 generalizes:
+$\rho_R^*(\mathrm{apply}(e, \sigma)) =
+\rho_R^*(\mathrm{apply}(e, \rho_R^*(\sigma)))$.
+In rewrite-theoretic terms, CC2 ensures that the normalizer is stable under
+interleaving with event application: normalizing ``early'' (before an event)
+versus ``late'' (after) does not change the final normal form.
+\end{remark}
+
+\subsection{Stream Processors}
+
+\begin{definition}[Stream Processor]
+\label{def:processor}
+A \emph{stream processor} $P$ for stream $\mathcal{S}$ under registry $R$ is a
+process that, at each time $t$, has received some subset of events
+$E_P(t) \subseteq \mathcal{S}$ and maintains state $\Psi_P(t) \in \Sigma_R$.
+We require:
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Eventual delivery}: For every event $e_i \in \mathcal{S}$, there
+  exists a time $t_i$ such that $e_i \in E_P(t)$ for all $t \geq t_i$.
+\item \textbf{Causality-respecting application}: The processor applies events
+  in some order that respects causality (\Cref{def:causal-order}), buffering
+  events whose causal dependencies have not yet been received.  The processor
+  is free to choose any causality-respecting order.
+\item \textbf{Incremental compensation}: After applying each event, the
+  processor applies $\rho_R$ until validity is restored.
+\end{enumerate}
+The processor's computation on event set $E_P(t)$ is a reduction sequence in
+the governance rewrite system $\mathcal{G}$ starting from
+$(\sigma_0, E_P(t))$.
+\end{definition}
+
+Different processors may apply the same events in different
+causality-respecting orders.  The convergence theorem guarantees they
+nonetheless arrive at the same valid state.
+
+%========================================
+\section{Worked Example: Order Fulfillment}
+\label{sec:example}
+
+We instantiate the framework on an order fulfillment pipeline, verify the
+structural conditions, and trace two processor orderings to the same valid
+state.
+
+\subsection{Registry Definition}
+
+An order has a \emph{stage} in $\{\textit{pending}, \textit{approved},
+\textit{held}\}$ and a \emph{balance} in $\{0, 1, 2, 3\}$.  The semantic
+state space is $\Sigma_R = \{\textit{pending}, \textit{approved},
+\textit{held}\} \times \{0, 1, 2, 3\}$, with $|\Sigma_R| = 12$ and initial
+state $\sigma_0 = (\textit{pending}, 0)$.
+
+A single invariant governs fulfillment:
+\[
+\psi(s, b) \;=\; \top \;\iff\; (s = \textit{approved} \implies b \geq 2).
+\]
+Approval requires a balance of at least~2.  The only invalid states are
+$(\textit{approved}, 0)$ and $(\textit{approved}, 1)$.
+
+\paragraph{Compensation.}
+When an order is approved with insufficient balance, it is placed on hold:
+\[
+\rho(\textit{approved}, b) = (\textit{held}, b) \quad \text{for } b < 2.
+\]
+All other states are valid, and $\rho$ acts as the identity.  The
+\textit{held} stage preserves the intent to approve: the system records that
+approval was requested but cannot yet proceed.  This is a deliberate design
+choice---a naive alternative that simply cancels the approval (reverting to
+\textit{pending}) would violate CC, as we discuss below.
+
+\paragraph{Measures.}
+$\Phi(s, b) = 1$ if $s = \textit{approved}$ and $b < 2$, otherwise $0$.
+WFC holds ($\rho$ strictly decreases $\Phi$ on invalid states), and UBC holds
+with $M = 1$.
+
+\subsection{Events}
+
+Two causally independent events:
+\begin{itemize}[leftmargin=*,nosep]
+\item $e_{\mathrm{credit}}$: Adds 1 to the balance (capped at~3).  If the
+  order is on hold and the new balance reaches~2, the order is automatically
+  approved:
+  \[
+  \mathrm{apply}(e_{\mathrm{credit}}, (s, b)) =
+  \begin{cases}
+  (\textit{approved}, \min(b{+}1, 3)) & \text{if } s = \textit{held} \text{ and } \min(b{+}1,3) \geq 2, \\
+  (s, \min(b{+}1, 3)) & \text{otherwise.}
+  \end{cases}
+  \]
+\item $e_{\mathrm{approve}}$: Sets the stage to \textit{approved}:
+  $\mathrm{apply}(e_{\mathrm{approve}}, (s, b)) = (\textit{approved}, b)$.
+\end{itemize}
+
+\subsection{Verifying CC}
+
+\paragraph{CC1 (Order Independence).}
+We verify CC1 for $(e_{\mathrm{approve}}, e_{\mathrm{credit}})$ at two
+representative starting states.
+
+\emph{From $(\textit{pending}, 0)$}:
+\begin{align*}
+&\text{Path 1 ($e_{\mathrm{approve}}$ first):} \\
+&\quad (\textit{pending}, 0) \xrightarrow{e_{\mathrm{approve}}}
+  (\textit{approved}, 0) \xrightarrow{\rho^*} (\textit{held}, 0)
+  \xrightarrow{e_{\mathrm{credit}}} (\textit{held}, 1).
+  \quad\text{Result: } (\textit{held}, 1). \\[4pt]
+&\text{Path 2 ($e_{\mathrm{credit}}$ first):} \\
+&\quad (\textit{pending}, 0) \xrightarrow{e_{\mathrm{credit}}}
+  (\textit{pending}, 1) \xrightarrow{e_{\mathrm{approve}}}
+  (\textit{approved}, 1) \xrightarrow{\rho^*} (\textit{held}, 1).
+  \quad\text{Result: } (\textit{held}, 1). \;\checkmark
+\end{align*}
+
+In Path~1, approval fires first, violates the invariant (balance~0 $< 2$),
+and compensation places the order on hold.  The subsequent credit increments
+the balance but does not yet reach the threshold.  In Path~2, credit arrives
+first (no violation), then approval violates the invariant and compensation
+again produces the held state.  Both paths reach $(\textit{held}, 1)$.
+
+\emph{From $(\textit{pending}, 1)$}:
+\begin{align*}
+&\text{Path 1:}\;
+  (\textit{pending}, 1) \xrightarrow{e_{\mathrm{approve}}}
+  (\textit{approved}, 1) \xrightarrow{\rho^*} (\textit{held}, 1)
+  \xrightarrow{e_{\mathrm{credit}}} (\textit{approved}, 2).
+  \quad\text{Result: } (\textit{approved}, 2). \\
+&\text{Path 2:}\;
+  (\textit{pending}, 1) \xrightarrow{e_{\mathrm{credit}}}
+  (\textit{pending}, 2) \xrightarrow{e_{\mathrm{approve}}}
+  (\textit{approved}, 2).
+  \quad\text{Result: } (\textit{approved}, 2). \;\checkmark
+\end{align*}
+
+In Path~1, approval again violates the invariant; compensation holds; the
+subsequent credit reaches balance~2, triggering auto-approval.  In Path~2, the
+credit arrives first, and approval at balance~2 is valid.  Both reach
+$(\textit{approved}, 2)$: the order is approved with sufficient funds.
+
+Since $|\Sigma_R| = 12$, CC1 can be verified exhaustively for all valid
+starting states.  All cases follow the same pattern: compensation preserves
+the approval intent in the held state, and subsequent credits eventually
+satisfy the balance threshold.
+
+\paragraph{CC2 (Compensation Absorption).}
+From the invalid state $(\textit{approved}, 0)$ with event
+$e_{\mathrm{credit}}$:
+\begin{align*}
+\text{LHS:}\;\; & \rho^*(\mathrm{apply}(e_{\mathrm{credit}},\,
+  (\textit{approved}, 0)))
+  = \rho^*((\textit{approved}, 1))
+  = (\textit{held}, 1). \\
+\text{RHS:}\;\; & \rho^*(\mathrm{apply}(e_{\mathrm{credit}},\,
+  \rho(\textit{approved}, 0)))
+  = \rho^*(\mathrm{apply}(e_{\mathrm{credit}},\,
+  (\textit{held}, 0)))
+  = \rho^*((\textit{held}, 1))
+  = (\textit{held}, 1). \;\checkmark
+\end{align*}
+
+Compensating before the credit (putting the order on hold first) produces the
+same result as applying the credit to the invalid state and then compensating.
+CC2 holds because the held state and the approved-but-invalid state respond
+identically to subsequent credits after compensation.
+
+\subsection{Two Processors, Three Events}
+
+Consider the stream $\mathcal{S} = \langle e_{\mathrm{approve}},
+e_{\mathrm{credit}}, e_{\mathrm{credit}} \rangle$ (approval followed by two
+credits).  Two processors $P_1, P_2$ receive the events in different orders:
+
+\medskip\noindent
+\textbf{Processor $P_1$} (approve, credit, credit):
+\[
+(\textit{pending}, 0)
+\xrightarrow{e_{\mathrm{approve}}} (\textit{approved}, 0)
+\xrightarrow{\rho^*} (\textit{held}, 0)
+\xrightarrow{e_{\mathrm{credit}}} (\textit{held}, 1)
+\xrightarrow{e_{\mathrm{credit}}} (\textit{approved}, 2).
+\]
+
+\noindent
+\textbf{Processor $P_2$} (credit, credit, approve):
+\[
+(\textit{pending}, 0)
+\xrightarrow{e_{\mathrm{credit}}} (\textit{pending}, 1)
+\xrightarrow{e_{\mathrm{credit}}} (\textit{pending}, 2)
+\xrightarrow{e_{\mathrm{approve}}} (\textit{approved}, 2).
+\]
+
+\noindent Both processors arrive at $(\textit{approved}, 2)$.  $P_1$ encountered
+an invariant violation (approval without sufficient balance) and passed
+through the held state; $P_2$ never violated the invariant.  Compensation
+commutativity guarantees agreement regardless of the path.
+
+\subsection{Why Compensation Design Matters}
+
+The held stage is essential.  A naive compensation that simply reverts
+approval to \textit{pending}---i.e.,
+$\rho(\textit{approved}, b) = (\textit{pending}, b)$---would violate CC1.
+From $(\textit{pending}, 0)$, approval-then-credit would produce
+$(\textit{pending}, 1)$ (intent to approve lost), while credit-then-approval
+would produce $(\textit{held}, 1)$ or a different compensated state depending
+on the design.  The held stage preserves the approval intent so that
+subsequent credits can trigger auto-approval, ensuring that different orderings
+converge.
+
+This illustrates the practical content of the CC conditions: they constrain
+\emph{compensation design}, not operation design.  The sufficient condition
+used here is \emph{state-determined compensation}: $\rho^*$ depends only on
+which invariants are violated (an approved order with low balance is always
+placed on hold), making the post-compensation state independent of how the
+violation was reached.
+
+%========================================
+\section{Convergence Theorem}
+\label{sec:convergence}
+
+\subsection{Termination}
+
+\begin{lemma}[Termination]
+\label{lem:termination}
+Under WFC (\Cref{ax:wfc}), the governance rewrite system $\mathcal{G}$ is
+terminating: every reduction sequence from $(\sigma_0, E)$ is finite.
+Under UBC (\Cref{ax:ubc}), the total number of steps is bounded by
+$|E| + (|E| + 1) \cdot M$.
+\end{lemma}
+\begin{proof}
+Define the measure $\mu(\sigma, B) = (|B|, \Phi(\sigma))$ taking values in
+$\mathbb{N} \times \mathbb{N}$ under the lexicographic order, which is
+well-founded.
+
+An apply step sends $(\sigma, B)$ to $(\mathrm{apply}(e, \sigma), B \setminus \{e\})$.
+The first component decreases: $|B \setminus \{e\}| = |B| - 1$.  Therefore
+$\mu$ strictly decreases regardless of the second component.
+
+A compensation step sends $(\sigma, B)$ to $(\rho_R(\sigma), B)$.  The first
+component is unchanged; the second strictly decreases by WFC.
+Therefore $\mu$ strictly decreases.
+
+Since $\mu$ maps into a well-ordered set and strictly decreases at every step,
+every reduction sequence is finite.  Under UBC, $\Phi(\sigma) \leq M$ for all
+$\sigma$, so at most $M$ compensation steps can occur between apply steps
+(including before the first apply), giving the uniform bound
+$|E| + (|E| + 1) \cdot M$.
+\end{proof}
+
+\subsection{Local Confluence}
+
+\begin{lemma}[Local Confluence]
+\label{lem:local-confluence}
+Under CC (\Cref{ax:cc}), the governance rewrite system $\mathcal{G}$ is
+locally confluent: if $(\sigma, B) \to X_1$ and $(\sigma, B) \to X_2$,
+then there exists a configuration~$Z$ with $X_1 \to^* Z$ and
+$X_2 \to^* Z$.
+\end{lemma}
+\begin{proof}
+Three cases arise from the two rewrite rules.
+
+\medskip\noindent\textbf{Case 1: Two apply steps.}\;
+$(\sigma, B) \to (\mathrm{apply}(e_1, \sigma), B \setminus \{e_1\})
+= X_1$ and
+$(\sigma, B) \to (\mathrm{apply}(e_2, \sigma), B \setminus \{e_2\})
+= X_2$, where $e_1 \neq e_2$ are both enabled.
+
+Since $e_1$ and $e_2$ are both enabled, their dependencies are disjoint
+from~$B$.  By \Cref{as:closure}, $e_1, e_2 \in E$, and since $e_1 \in B$ we
+have $e_1 \notin \mathrm{deps}(e_2)$ (otherwise
+$\mathrm{deps}(e_2) \cap B \neq \varnothing$, contradicting enabledness of
+$e_2$), and symmetrically $e_2 \notin \mathrm{deps}(e_1)$.  Therefore $e_1$
+and $e_2$ are causally independent.
+
+From $X_1$: compensate to validity, obtaining
+$(\rho_R^*(\mathrm{apply}(e_1, \sigma)),\, B \setminus \{e_1\})$; then
+apply~$e_2$ (still enabled since its dependencies remain outside
+$B \setminus \{e_1\}$) and compensate, reaching
+\[
+Z_1 = \bigl(\rho_R^*(\mathrm{apply}(e_2,\,
+  \rho_R^*(\mathrm{apply}(e_1, \sigma)))),\;
+  B \setminus \{e_1, e_2\}\bigr).
+\]
+From $X_2$: symmetrically, reach
+\[
+Z_2 = \bigl(\rho_R^*(\mathrm{apply}(e_1,\,
+  \rho_R^*(\mathrm{apply}(e_2, \sigma)))),\;
+  B \setminus \{e_1, e_2\}\bigr).
+\]
+By CC1, the state components of $Z_1$ and $Z_2$ are equal.  Take $Z = Z_1 = Z_2$.
+
+\medskip\noindent\textbf{Case 2: Apply vs.\ compensation.}\;
+$V_R(\sigma) = \bot$ and $e$ is enabled in~$B$.
+$(\sigma, B) \to (\mathrm{apply}(e, \sigma), B \setminus \{e\}) = X_1$
+and
+$(\sigma, B) \to (\rho_R(\sigma), B) = X_2$.
+
+From $X_1$: compensate to validity, reaching
+$(\rho_R^*(\mathrm{apply}(e, \sigma)),\, B \setminus \{e\})$.
+
+From $X_2 = (\rho_R(\sigma), B)$: apply~$e$ (still enabled, since
+compensation does not change~$B$) to get
+$(\mathrm{apply}(e, \rho_R(\sigma)),\, B \setminus \{e\})$; then
+compensate to validity, reaching
+$(\rho_R^*(\mathrm{apply}(e, \rho_R(\sigma))),\, B \setminus \{e\})$.
+
+By CC2, $\rho_R^*(\mathrm{apply}(e, \sigma)) =
+\rho_R^*(\mathrm{apply}(e, \rho_R(\sigma)))$.  The buffer components
+are equal.  Take $Z = (\rho_R^*(\mathrm{apply}(e, \sigma)),\, B \setminus
+\{e\})$.
+
+\medskip\noindent\textbf{Case 3: Two compensation steps.}\;
+Both rewrites apply $\rho_R$ to the same state, producing the same
+successor $(\rho_R(\sigma), B)$.  Take $Z = (\rho_R(\sigma), B)$.
+\end{proof}
+
+\subsection{Main Result}
+
+\begin{corollary}[Unique Normal Forms]
+\label{cor:unique-nf}
+Under WFC and CC, every configuration $(\sigma_0, E)$ has a unique normal
+form.
+\end{corollary}
+\begin{proof}
+By \Cref{lem:termination}, $\mathcal{G}$ is terminating.  By
+\Cref{lem:local-confluence}, $\mathcal{G}$ is locally confluent.  By Newman's
+Lemma~\cite{newman1942}, $\mathcal{G}$ is globally confluent.  A terminating,
+confluent rewrite system has unique normal forms.
+\end{proof}
+
+\begin{theorem}[Stream Convergence]
+\label{thm:convergence}
+Let $R$ be a registry satisfying WFC (\Cref{ax:wfc}) and CC
+(\Cref{ax:cc}), and let $P_1, P_2$ be stream processors
+(\Cref{def:processor}) consuming the same event stream~$\mathcal{S}$.
+Then:
+\begin{enumerate}[leftmargin=*,nosep,label=(\alph*)]
+\item \textbf{Validity}: For each processor, after it completes the
+  incremental compensation phase for any applied event, its state satisfies
+  $V_R(\Psi_{P_j}(t)) = \top$.
+\item \textbf{Order independence}: The state of each processor depends only on
+  its received event set, not on the order in which events were applied.
+\item \textbf{Agreement}: Whenever the processors have received the same
+  events, they are in the same state: if $E_{P_1}(t) = E_{P_2}(t)$, then
+  $\Psi_{P_1}(t) = \Psi_{P_2}(t)$.
+\end{enumerate}
+Combined with eventual delivery, disagreements are transient: any event causing
+processors to differ will eventually be received by both, restoring agreement.
+\end{theorem}
+
+\begin{proof}
+We prove each part.
+
+\medskip\noindent\textbf{Part (a): Validity.}\;
+By \Cref{lem:termination}, compensation terminates.  By
+\Cref{def:processor}, the processor compensates after each event
+application until validity is restored.  Therefore after completing the
+compensation phase for any applied event,
+$V_R(\Psi_{P_j}(t)) = \top$.
+
+\medskip\noindent\textbf{Part (b): Order independence.}\;
+Each processor's computation on event set $E = E_{P_j}(t)$ is a reduction
+sequence in the governance rewrite system from $(\sigma_0, E)$ to a normal
+form $(\sigma^*, \varnothing)$.  Different causality-respecting orders
+correspond to different reduction sequences.  By \Cref{cor:unique-nf}, all
+reduction sequences reach the same normal form.  Therefore the final
+state~$\sigma^*$ depends only on $E$, not on the order.
+
+\medskip\noindent\textbf{Part (c): Agreement.}\;
+If $E_{P_1}(t) = E_{P_2}(t) = E$, then both processors' computations are
+reduction sequences from $(\sigma_0, E)$.  By \Cref{cor:unique-nf}, both
+reach the same normal form $(\sigma^*, \varnothing)$.  Therefore
+$\Psi_{P_1}(t) = \Psi_{P_2}(t) = \sigma^*$.
+\end{proof}
+
+\begin{remark}[Semantic Projection as a Set Function]
+\label{rem:set-function}
+The theorem implies that the mapping $F(E) = \nf(\sigma_0, E)$---the unique
+normal form of the governance rewrite system starting from $(\sigma_0, E)$---is
+a well-defined function of the event \emph{set}~$E$, independent of causal
+linearization.  This is the Church--Rosser property for our operational
+semantics.
+\end{remark}
+
+\begin{corollary}[Convergence Under Quiescent Streams]
+\label{cor:quiescent}
+If the stream $\mathcal{S}$ is finite, then there exists a valid state
+$\sigma^*$ such that both processors converge to~$\sigma^*$: there exists $T$
+with $\Psi_{P_1}(t) = \Psi_{P_2}(t) = \sigma^*$ for all $t \geq T$.
+\end{corollary}
+\begin{proof}
+By eventual delivery, there exists $T_N$ such that
+$E_{P_1}(t) = E_{P_2}(t) = \mathcal{S}$ for all $t \geq T_N$.  By
+\Cref{thm:convergence}(c), both processors are in the same state.  Since no
+new events arrive, this state is fixed from~$T_N$ onward.
+\end{proof}
+
+\begin{remark}[Infinite Streams]
+\label{rem:infinite-streams}
+For infinite streams, the received event sets grow monotonically
+toward~$\mathcal{S}$ but may differ at any given time.  When event sets
+coincide, \Cref{thm:convergence}(c) guarantees agreement.  Eventual delivery
+ensures that any event causing disagreement is transient.  The agreed-upon
+state may continue to change as new events arrive---the guarantee is perpetual
+agreement, not convergence to a fixed point.  \Cref{cor:quiescent} recovers
+fixed-point convergence when the stream is finite.
+\end{remark}
+
+%========================================
+\section{Necessity of the Structural Conditions}
+\label{sec:necessity}
+
+We show that both UBC and CC are necessary for their respective guarantees:
+UBC for uniform complexity, CC for agreement.
+
+\subsection{Necessity of UBC}
+
+UBC is not merely convenient; it is necessary for a uniform bound on
+compensation depth, and thus for the constant per-event compensation overhead
+used in the complexity analysis (\Cref{sec:complexity}).  Without it,
+compensation depth can grow without limit as event sets grow.
+
+\begin{theorem}[Unbounded Compensation Depth Without UBC]
+\label{thm:necessity}
+For any $M \in \mathbb{N}$, there exists a registry $R_\infty$ and a finite
+event set~$E$ such that some reduction sequence from $(\sigma_0, E)$ in the
+governance rewrite system contains more than $M$ compensation steps.
+Consequently, no uniform bound on compensation depth exists, and UBC fails.
+\end{theorem}
+
+\begin{proof}
+Define $R_\infty$ with $\Sigma_{R_\infty} = \mathbb{Z}$, the single invariant
+$\psi(\sigma) = \top \iff \sigma = 0$, initial state $\sigma_0 = 0$, and
+compensation $\rho(\sigma) = \sigma + 1$ for $\sigma < 0$ and
+$\rho(\sigma) = \sigma - 1$ for $\sigma > 0$ (so compensation moves
+toward~$0$).
+
+For each $n \in \mathbb{N}$, consider the single-event set $E_n = \{e_n\}$
+where $\mathrm{apply}(e_n, 0) = -n$.  Under the processor model
+(\Cref{def:processor}), the processor applies $e_n$ to reach state $-n$, then
+compensates incrementally: $-n \to -(n-1) \to \cdots \to -1 \to 0$.  This
+requires exactly $n$ compensation steps.
+
+For any proposed bound~$M$, choose $n = M + 1$.  The compensation episode
+after this single event contains $n > M$ steps.  Therefore no finite~$M$
+uniformly bounds compensation depth, and UBC fails.
+
+The measure $\Phi(\sigma) = |\sigma|$ strictly decreases under~$\rho$, so WFC
+holds and compensation terminates for each fixed~$E_n$.  The pathology is not
+non-termination but \emph{unbounded} termination: the compensation depth
+required to restore validity grows without limit.
+\end{proof}
+
+\begin{remark}[What Fails]
+The counterexample satisfies WFC (compensation terminates for every
+fixed~$E_n$) but violates UBC (compensation depth is~$n$, unbounded).  CC also
+holds: there is only one event per set, so order independence is vacuous, and
+compensation absorption holds because $\rho$ moves deterministically
+toward~$0$.  The pathology is purely one of unbounded depth, which invalidates
+the uniform step bound and the constant per-event compensation cost in
+\Cref{thm:complexity}.  Finite semantic state spaces prevent this by
+bounding~$\Phi$ (\Cref{lem:finite-implies-ubc}).
+\end{remark}
+
+\subsection{Necessity of CC}
+
+CC is necessary for agreement: without it, processors applying the same events
+in different causality-respecting orders can reach different valid states.
+
+\begin{proposition}[Disagreement Without CC]
+\label{prop:cc-necessary}
+There exists a registry satisfying WFC and UBC, and a finite event set~$E$
+with two causality-respecting orderings, such that the governance rewrite
+system reaches different valid normal forms under the two orderings.
+\end{proposition}
+
+\begin{proof}
+Let $\Sigma_R = \{A, B, C, D\}$ with valid states $\{A, B\}$ and
+compensation $\rho_R(C) = A$, $\rho_R(D) = B$.  UBC holds with $M = 1$.
+
+Define two events $e_1, e_2$ with $\mathrm{deps}(e_1) = \mathrm{deps}(e_2) =
+\varnothing$, so both are enabled from the initial configuration
+$(A, \{e_1, e_2\})$ and are causally independent under
+\Cref{def:causal-order}.  Their application is:
+\[
+\begin{array}{c|cccc}
+  & A & B & C & D \\ \hline
+e_1 & C & C & C & D \\
+e_2 & D & C & C & D
+\end{array}
+\]
+
+Evaluate CC1 at $\sigma = A$.  Under the processor model
+(\Cref{def:processor}), each processor normalizes after each application,
+so the comparison is between $\rho_R^*(A_{e_2}(\rho_R^*(A_{e_1}(A))))$ and
+the symmetric order.
+
+\emph{Path 1} ($e_1$ then $e_2$): $\mathrm{apply}(e_1, A) = C$,
+$\rho_R^*(C) = A$, $\mathrm{apply}(e_2, A) = D$, $\rho_R^*(D) = B$.
+Normal form: $B$.
+
+\emph{Path 2} ($e_2$ then $e_1$): $\mathrm{apply}(e_2, A) = D$,
+$\rho_R^*(D) = B$, $\mathrm{apply}(e_1, B) = C$, $\rho_R^*(C) = A$.
+Normal form: $A$.
+
+Since $A \neq B$, CC1 is violated.  Two processors consuming
+$\{e_1, e_2\}$ in different causality-respecting orders reach different valid
+states despite WFC and UBC holding.
+\end{proof}
+
+\begin{remark}
+The key feature is that $\rho_R$ maps distinct invalid states to
+\emph{distinct} valid states ($C \mapsto A$, $D \mapsto B$), creating
+path-dependent repair.  Contrast this with the order fulfillment example
+(\Cref{sec:example}), where compensation preserves approval intent via the
+held state, ensuring path-independent repair.  CC captures precisely the
+boundary between these cases.
+\end{remark}
+
+\begin{remark}
+The UBC counterexample (\Cref{thm:necessity}) satisfies CC but violates UBC;
+the CC counterexample (\Cref{prop:cc-necessary}) satisfies WFC and UBC but
+violates CC.  Together, they show that each condition is independently
+necessary for its respective guarantee.
+\end{remark}
+
+%========================================
+\section{Complexity Analysis}
+\label{sec:complexity}
+
+\begin{theorem}[Convergence Complexity]
+\label{thm:complexity}
+For a stream prefix of length $n$ under a registry satisfying UBC with
+bound~$M$ and $k = |I_R|$ invariants, the model-level cost of
+registry-governed stream processing is $O(n)$ for event application,
+validation, and compensation combined.  If causality maintenance is
+implemented with a priority queue, the total cost is $O(n \log n)$, where $k$
+and $M$ are treated as constants of system design.
+\end{theorem}
+
+\begin{proof}
+We analyze the per-event cost, separating model-level costs (which follow from
+the formalism) from scheduling costs (which depend on implementation).
+
+\textbf{Model-level per-event costs.}  For each event $e_i$
+($1 \leq i \leq n$):
+\begin{itemize}[leftmargin=*,nosep]
+\item \emph{Event application}: $O(1)$ (state update).
+\item \emph{Invariant validation}: $O(k) = O(1)$ (evaluate each~$\psi_j$).
+\item \emph{Compensation}: At most $M$ steps, each $O(1)$.  Since $M$ is
+  bounded by UBC, this is $O(1)$.
+\end{itemize}
+Registry governance therefore adds $O(1)$ overhead per event beyond what the
+base stream processor already performs.
+
+\textbf{Scheduling overhead.}  Maintaining a set of enabled events and
+resolving causal dependencies requires implementation-dependent data
+structures.  With a priority queue keyed by timestamp and identifier, each
+event insertion and dependency-resolution check costs $O(\log i)$, yielding:
+
+\textbf{Total cost.}
+\[
+T(n) = \sum_{i=1}^n \bigl(\underbrace{O(1)}_{\text{model}} +
+  \underbrace{O(\log i)}_{\text{scheduling}}\bigr)
+     = O(n) + O\!\left(\sum_{i=1}^n \log i\right)
+     = O(n \log n).
+\]
+
+The dominant term is causality maintenance.  Validation and compensation
+contribute no asymptotic overhead.  Systems with native causal ordering (e.g.,
+single-partition Kafka topics) eliminate the $O(\log i)$ term, reducing the
+bound to~$O(n)$.
+\end{proof}
+
+%========================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Three Regimes of Coordination-Free Convergence}
+\label{sec:design-space}
+
+Our result, combined with CRDTs~\cite{shapiro2011crdt} and invariant
+confluence~\cite{bailis2014coordination}, identifies three distinct structural
+regimes under which distributed processors converge without coordination:
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Operation commutativity} (CRDTs): Operations commute
+  algebraically.  Convergence follows from the algebra of operations.  No
+  invariant enforcement or compensation is needed.
+\item \textbf{Invariant confluence} (I-confluence): Operations preserve
+  application invariants under all orderings.  Convergence follows because
+  validity is never violated.  No compensation is needed.
+\item \textbf{Normalization confluence} (this paper): Operations may be
+  non-commutative and may violate invariants.  Compensation normalizes states
+  to validity.  WFC and CC are sufficient for semantic convergence
+  (\Cref{thm:convergence}); UBC is orthogonal to convergence and governs
+  scalability (\Cref{thm:complexity}).  No coordination is needed.
+\end{enumerate}
+
+The three regimes form a containment hierarchy.  Operation commutativity
+implies CC (with $\rho_R^* = \mathrm{id}$).  Invariant confluence implies that
+compensation never fires.  Normalization confluence subsumes both as special
+cases and additionally covers systems where operations are non-commutative and
+invariant-violating---the common case in business applications.
+
+The regimes partition the coordination-free design space by \emph{where}
+convergence is guaranteed: in the operations (regime~1), in the invariants
+(regime~2), or in the normalization rewrite system (regime~3).
+
+\begin{remark}[Convergence as a Property of the Rewrite System]
+\label{rem:rewrite-property}
+The conventional literature frames convergence as a property of operations:
+operations must commute, or operations must preserve invariants.
+Normalization confluence reframes convergence as a property of the
+\emph{rewrite system} that interleaves application and compensation.  The
+operations themselves need no special algebraic structure.  This shifts the
+design burden from operation algebra to compensation design, and places the
+convergence mechanism at the semantic normalization layer---above the
+data-structure layer (CRDTs) and the transaction layer (I-confluence).
+\end{remark}
+
+\subsection{Verifying Compensation Commutativity}
+
+CC is easy to state but potentially hard to verify: it quantifies over all
+states and all independent event pairs.  \Cref{sec:calculus} develops a
+verification calculus that reduces CC to local, per-event-pair checks via
+invariant footprints and decomposable repair.  Here we note three common
+patterns that practitioners can use as a first check before invoking the full
+calculus:
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{Compensation to a canonical state.}\;  If there exists a
+  default valid state $\sigma_\bot$ such that $\rho_R^*(\sigma) = \sigma_\bot$
+  for all invalid~$\sigma$, both CC1 and CC2 hold trivially.  This is the
+  ``reset to safe default'' pattern.
+\item \textbf{Lattice-structured compensation.}\;  If the valid states form a
+  join-semilattice and compensation computes the join with the nearest valid
+  state, both conditions hold by the commutativity of the join operation.
+\item \textbf{Decomposable repair.}\;  If compensation decomposes into
+  commuting per-invariant repairs, CC can be verified via the footprint
+  calculus of \Cref{sec:calculus}.  The order fulfillment example
+  (\Cref{sec:example}) uses this pattern.
+\end{enumerate}
+
+\subsection{Applications}
+
+The compensate-and-converge principle applies wherever systems process streams
+of changes under semantic constraints with bounded compensation.  We highlight
+three domains.
+
+\paragraph{Infrastructure Configuration Drift.}
+Infrastructure-as-code tools apply streams of configuration changes to
+infrastructure state.  Valid configurations are defined by policy.  The
+semantic state space is finite ($k$ boolean policy predicates yield at most
+$2^k$ equivalence classes).  Remediation operators that reset violated policies
+to compliant defaults satisfy CC2 (compensation to a canonical state per
+policy).  Our theorem guarantees convergence to equivalent policy-compliant
+states regardless of the order in which changes are applied.
+
+\paragraph{Database Schema Migration.}
+Schema migrations are event streams applied to schema state.  The set of valid
+schema configurations is finite.  Migration scripts that repair constraint
+violations constitute compensation operators.  When such scripts resolve each
+constraint independently (lattice-structured compensation), CC holds and our
+theorem guarantees order-independent convergence.
+
+\paragraph{Regulatory Compliance.}
+Organizations processing streams of regulatory changes must maintain
+compliance.  Compliance states are finite (each regulation is either satisfied
+or not).  Remediation procedures that restore compliance by addressing each
+violated regulation independently satisfy CC.  Our theorem guarantees
+convergence to equivalent compliance states.
+
+\subsection{Extensions}
+
+The single-registry result is the foundation for two extensions we do not
+attempt here.  First, \emph{federated streams} where multiple organizations
+maintain independent registries connected by morphisms.  Second,
+\emph{privacy-preserving validation} where organizations prove registry
+compliance via zero-knowledge proofs.  Both require the single-registry
+convergence result as a building block.
+
+%========================================
+\section{Verification Calculus for CC}
+\label{sec:calculus}
+
+Compensation commutativity is a global condition: it quantifies over all states
+and all independent event pairs.  This section develops sufficient conditions
+that reduce CC to local, per-event-pair checks.  The key tools are an
+\emph{invariant footprint} mapping and a \emph{decomposable repair} condition.
+
+\subsection{Notation}
+
+For readability in algebraic manipulations, we write
+$N(\sigma) \defeq \rho_R^*(\sigma)$ for iterated compensation to validity
+(\Cref{def:rhostar}).  The normalizer satisfies: (i)~$V_R(N(\sigma)) = \top$
+for all~$\sigma$; (ii)~$N(\sigma) = \sigma$ if $V_R(\sigma) = \top$;
+(iii)~$N(N(\sigma)) = N(\sigma)$ (idempotence).  We write
+$A_e(\sigma) \defeq \mathrm{apply}(e, \sigma)$ when convenient.
+
+In this notation, the CC obligations become:
+\begin{itemize}[leftmargin=*,nosep]
+\item[\textbf{(CC1)}] $N(A_{e_2}(N(A_{e_1}(\sigma)))) =
+  N(A_{e_1}(N(A_{e_2}(\sigma))))$ for independent $e_1, e_2$.
+\item[\textbf{(CC2)}] $N(A_e(\sigma)) = N(A_e(\rho_R(\sigma)))$ for
+  invalid~$\sigma$.
+\end{itemize}
+
+\subsection{Invariant Vectors and Footprints}
+
+\begin{definition}[Invariant Vector]
+\label{def:inv-vector}
+Define $\mathbf{v}: \Sigma_R \to \{0,1\}^k$ by
+$\mathbf{v}(\sigma)_i = 1 \iff \psi_i(\sigma) = \top$.
+\end{definition}
+
+\begin{definition}[Footprint]
+\label{def:footprint}
+A \emph{footprint} is a function $F: \mathcal{E} \to 2^{\{1,\ldots,k\}}$ such
+that for all $\sigma$ and all $i \notin F(e)$,
+\[
+\mathbf{v}(A_e(\sigma))_i = \mathbf{v}(\sigma)_i.
+\]
+Intuitively, $F(e)$ is the set of invariants whose truth value can change
+under~$e$.  Over-approximations are sound: larger footprints make the calculus
+more conservative but never incorrect.
+\end{definition}
+
+\subsection{Decomposable Repair}
+
+We capture the common case where repair addresses each violated invariant
+independently.
+
+\begin{definition}[Per-Invariant Repair]
+\label{def:perinv}
+A set of \emph{per-invariant repair operators} $r_1, \ldots, r_k :
+\Sigma_R \to \Sigma_R$ satisfies:
+\begin{enumerate}[leftmargin=*,nosep,label=(R\arabic*)]
+\item \textbf{Targeted fix:}\; if $\psi_i(\sigma) = \bot$, then
+  $\psi_i(r_i(\sigma)) = \top$.
+\item \textbf{No-op on satisfied:}\; if $\psi_i(\sigma) = \top$, then
+  $r_i(\sigma) = \sigma$.
+\item \textbf{Mutual commutativity:}\; $r_i(r_j(\sigma)) = r_j(r_i(\sigma))$
+  for all $i, j$.
+\end{enumerate}
+\end{definition}
+
+\begin{definition}[Decomposable Normalizer]
+\label{def:decomp}
+The normalizer $N$ is \emph{decomposable} if there exist per-invariant repairs
+$r_1, \ldots, r_k$ as above such that
+\[
+N(\sigma) = r_1(r_2(\cdots r_k(\sigma) \cdots))
+\]
+for all~$\sigma$.  (The order is irrelevant by mutual commutativity.)
+\end{definition}
+
+\begin{definition}[Repair Locality]
+\label{def:repair-locality}
+An event $e$ is \emph{repair-local} with respect to footprint $F(e)$ if for
+all $i \notin F(e)$,
+\[
+r_i(A_e(\sigma)) = A_e(r_i(\sigma)).
+\]
+That is, $e$ commutes with repairs of invariants it does not affect.
+\end{definition}
+
+\subsection{Strong Absorption Implies CC2}
+
+\begin{theorem}[Strong Absorption]
+\label{thm:strong-absorption}
+Assume WFC and let $N = \rho_R^*$.  If for all events $e$ and states~$\sigma$,
+\[
+N(A_e(\sigma)) = N(A_e(N(\sigma))),
+\]
+then CC2 holds.
+\end{theorem}
+
+\begin{proof}
+Let $V_R(\sigma) = \bot$.  Because $N$ iterates $\rho_R$ to the unique valid
+fixpoint reachable from~$\sigma$, and $\rho_R(\sigma)$ lies on the same
+compensation chain, we have $N(\sigma) = N(\rho_R(\sigma))$.
+
+Applying the assumed equation at $\sigma$ and at $\rho_R(\sigma)$:
+\[
+N(A_e(\sigma)) = N(A_e(N(\sigma))) = N(A_e(N(\rho_R(\sigma)))) = N(A_e(\rho_R(\sigma))),
+\]
+where the first and third equalities use the assumption and the middle equality
+uses $N(\sigma) = N(\rho_R(\sigma))$.  This is CC2.
+\end{proof}
+
+\begin{remark}
+Strong absorption states: ``normalizing before applying an event does not
+change the final normalized outcome.''  This holds whenever compensation
+repairs violations in a way determined by the violation pattern rather than by
+the path to the violation.  The order fulfillment example
+(\Cref{sec:example}) satisfies this: the held state captures the approval
+intent regardless of whether the order was directly approved with low balance
+or arrived at the invalid state through a different path.
+\end{remark}
+
+\subsection{Footprint Disjointness Implies CC1}
+
+We prove two preparatory lemmas before the main theorem.
+
+\begin{lemma}[Repair-Event Commutation]
+\label{lem:repair-commute}
+If event $e$ is repair-local with respect to footprint $F(e)$
+(\Cref{def:repair-locality}), then for any index set $J$ with
+$J \cap F(e) = \varnothing$ and any state~$\sigma$:
+\[
+R_J(A_e(\sigma)) = A_e(R_J(\sigma)),
+\]
+where $R_J = \prod_{i \in J} r_i$.
+\end{lemma}
+
+\begin{proof}
+By repair locality, $r_i \circ A_e = A_e \circ r_i$ for each $i \in J$
+(since $i \notin F(e)$).  The result follows by induction on $|J|$: if the
+claim holds for $R_{J'}$ with $|J'| < |J|$, then for any $j \in J$,
+\[
+R_J(A_e(\sigma)) = r_j(R_{J \setminus \{j\}}(A_e(\sigma)))
+= r_j(A_e(R_{J \setminus \{j\}}(\sigma)))
+= A_e(r_j(R_{J \setminus \{j\}}(\sigma)))
+= A_e(R_J(\sigma)),
+\]
+using the inductive hypothesis and then $r_j \circ A_e = A_e \circ r_j$.
+\end{proof}
+
+\begin{lemma}[Repair Block Idempotence]
+\label{lem:repair-idempotent}
+For any index set $J \subseteq \{1,\ldots,k\}$, the repair block $R_J$ is
+idempotent on states that are valid on all invariants in~$J$: if
+$\psi_i(\sigma) = \top$ for all $i \in J$, then $R_J(\sigma) = \sigma$.
+More generally, $R_J(R_J(\sigma)) = R_J(\sigma)$ for all~$\sigma$.
+\end{lemma}
+
+\begin{proof}
+If $\psi_i(\sigma) = \top$ for all $i \in J$, then each $r_i(\sigma) = \sigma$
+by~(R2), so $R_J(\sigma) = \sigma$.  For general idempotence: $R_J(\sigma)$
+satisfies $\psi_i(R_J(\sigma)) = \top$ for all $i \in J$ (each $r_i$ fixes its
+invariant by~(R1) and does not break others by mutual commutativity and~(R2)),
+so $R_J(R_J(\sigma)) = R_J(\sigma)$ by the first claim.
+\end{proof}
+
+\begin{theorem}[Footprint Commutativity]
+\label{thm:footprint-cc1}
+Assume WFC and that $N$ is decomposable via commuting per-invariant repairs
+$r_1, \ldots, r_k$.  Let $e_1, e_2$ be independent events satisfying:
+\begin{enumerate}[leftmargin=*,nosep,label=(H\arabic*)]
+\item Disjoint footprints: $F(e_1) \cap F(e_2) = \varnothing$.
+\item Repair locality: each $e_j$ is repair-local with respect to $F(e_j)$.
+\end{enumerate}
+Then CC1 holds for $(e_1, e_2)$.
+\end{theorem}
+
+\begin{proof}
+Partition $\{1, \ldots, k\}$ into three disjoint index sets:
+$S_1 = F(e_1)$, $S_2 = F(e_2)$,
+$S_0 = \{1,\ldots,k\} \setminus (S_1 \cup S_2)$.
+By decomposability and mutual commutativity, $N = R_{S_0} \circ R_{S_1}
+\circ R_{S_2}$ in any order.  We compute both sides of CC1 as chains of
+equalities.
+
+\emph{Left side}: $N(A_{e_2}(N(A_{e_1}(\sigma))))$.
+\begin{align}
+&= N(A_{e_2}(R_{S_0}(R_{S_1}(R_{S_2}(A_{e_1}(\sigma))))))
+  \tag{expand inner $N$} \\
+&= N(R_{S_0}(R_{S_1}(A_{e_2}(R_{S_2}(A_{e_1}(\sigma))))))
+  \tag{\Cref{lem:repair-commute}: $S_0 \cap F(e_2) = S_1 \cap F(e_2) = \varnothing$} \\
+&= R_{S_0}(R_{S_1}(R_{S_2}(R_{S_0}(R_{S_1}(A_{e_2}(R_{S_2}(A_{e_1}(\sigma))))))))
+  \tag{expand outer $N$} \\
+&= R_{S_0}(R_{S_1}(R_{S_2}(A_{e_2}(R_{S_2}(A_{e_1}(\sigma))))))
+  \tag{\Cref{lem:repair-idempotent}: $R_{S_0}, R_{S_1}$ absorbed}
+\end{align}
+
+\emph{Right side}: $N(A_{e_1}(N(A_{e_2}(\sigma))))$.
+\begin{align}
+&= N(A_{e_1}(R_{S_0}(R_{S_2}(R_{S_1}(A_{e_2}(\sigma))))))
+  \tag{expand inner $N$} \\
+&= N(R_{S_0}(R_{S_2}(A_{e_1}(R_{S_1}(A_{e_2}(\sigma))))))
+  \tag{\Cref{lem:repair-commute}: $S_0 \cap F(e_1) = S_2 \cap F(e_1) = \varnothing$} \\
+&= R_{S_0}(R_{S_1}(R_{S_2}(R_{S_0}(R_{S_2}(A_{e_1}(R_{S_1}(A_{e_2}(\sigma))))))))
+  \tag{expand outer $N$} \\
+&= R_{S_0}(R_{S_1}(R_{S_2}(A_{e_1}(R_{S_1}(A_{e_2}(\sigma))))))
+  \tag{\Cref{lem:repair-idempotent}: $R_{S_0}, R_{S_2}$ absorbed}
+\end{align}
+
+\emph{Equating.}  The left side is
+$R_{S_0}(R_{S_1}(R_{S_2}(A_{e_2}(R_{S_2}(A_{e_1}(\sigma))))))$ and the right
+side is $R_{S_0}(R_{S_1}(R_{S_2}(A_{e_1}(R_{S_1}(A_{e_2}(\sigma))))))$.
+It remains to show their inner expressions are equal.
+
+Apply \Cref{lem:repair-commute} to move $R_{S_2}$ past $A_{e_1}$ on the left
+(since $S_2 \cap F(e_1) = \varnothing$):
+\[
+A_{e_2}(R_{S_2}(A_{e_1}(\sigma))) = A_{e_2}(A_{e_1}(R_{S_2}(\sigma))).
+\]
+Apply \Cref{lem:repair-commute} to move $R_{S_1}$ past $A_{e_2}$ on the right
+(since $S_1 \cap F(e_2) = \varnothing$):
+\[
+A_{e_1}(R_{S_1}(A_{e_2}(\sigma))) = A_{e_1}(A_{e_2}(R_{S_1}(\sigma))).
+\]
+Both inner expressions now have the form
+$A_{e_j}(A_{e_\ell}(R_?(\sigma)))$ with all repairs pushed past the events.
+Applying $R_{S_2}$ to the left expression and $R_{S_1}$ to the right, then
+using mutual commutativity of $R_{S_1}$ and $R_{S_2}$, both sides reduce to
+\[
+R_{S_0}(R_{S_1}(R_{S_2}(A_{e_2}(A_{e_1}(R_{S_2}(R_{S_1}(\sigma))))))).
+\]
+Since $R_{S_1}$ and $R_{S_2}$ commute and each is idempotent after application
+(\Cref{lem:repair-idempotent}), the left and right sides are equal.
+\end{proof}
+
+\begin{remark}[Practical import]
+A practitioner does not prove CC1 by global state enumeration.  Instead:
+(i)~assign each event type an invariant footprint, (ii)~verify that each event
+commutes with repairs outside its footprint (\Cref{lem:repair-commute}),
+(iii)~check that independent event pairs have disjoint footprints.  All three
+are local obligations.  The order fulfillment example (\Cref{sec:example})
+demonstrates this workflow: $e_{\mathrm{credit}}$ and $e_{\mathrm{approve}}$
+affect disjoint aspects of the state, and the held-state repair commutes with
+credit application.
+\end{remark}
+
+\subsection{Product Composition}
+
+Real systems comprise multiple semantic modules.  The following theorem shows
+CC verifications compose.
+
+\begin{definition}[Product Registry]
+\label{def:product}
+Let $R_1 = (\Sigma_1, I_1, V_1, \rho_1)$ and $R_2 = (\Sigma_2, I_2, V_2,
+\rho_2)$ with disjoint invariant sets.  Define $R_1 \otimes R_2$ by:
+\[
+\Sigma = \Sigma_1 \times \Sigma_2, \quad
+V(\sigma_1, \sigma_2) = V_1(\sigma_1) \wedge V_2(\sigma_2), \quad
+\rho(\sigma_1, \sigma_2) = (\rho_1(\sigma_1), \rho_2(\sigma_2)).
+\]
+Events are pairs $e = (e^{(1)}, e^{(2)})$ with application componentwise.
+\end{definition}
+
+\begin{theorem}[Product Lifting]
+\label{thm:product}
+If each $R_j$ satisfies WFC and CC, then $R_1 \otimes R_2$ satisfies WFC and
+CC.  If each normalizer is decomposable, the product normalizer is
+decomposable with footprints composed by union across components.
+\end{theorem}
+
+\begin{proof}
+\emph{WFC}: Use measure $\Phi(\sigma_1, \sigma_2) = \Phi_1(\sigma_1) +
+\Phi_2(\sigma_2)$.  Each compensation step strictly decreases at least one
+component when invalid.
+
+\emph{CC2}: The product normalizer satisfies $N(\sigma_1, \sigma_2) =
+(N_1(\sigma_1), N_2(\sigma_2))$ and application is componentwise, so
+CC2 holds iff it holds in each component.
+
+\emph{CC1}: Both sides of the CC1 equation decompose into paired equalities
+in $R_1$ and $R_2$ by componentwise application and normalization.
+
+\emph{Decomposability}: Per-invariant repairs in each component act on
+disjoint state components and thus commute across components trivially.
+\end{proof}
+
+\begin{remark}
+Product composition enables modular system design: verify CC for each semantic
+module independently, then compose without re-verification.  An order
+processing system with separate inventory, payment, and shipping registries
+can verify CC per-module and lift to the combined system.
+\end{remark}
+
+\subsection{Partial Decomposability}
+
+Full decomposability is a strong sufficient condition.  When it does not hold
+globally, the calculus still provides value:
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item CC may hold for event pairs with disjoint footprints even if the full
+  normalizer is not decomposable.  The footprint theorem
+  (\Cref{thm:footprint-cc1}) applies to any event pair satisfying its
+  hypotheses, regardless of whether \emph{all} pairs do.
+\item When footprints overlap for some event pair, the calculus identifies
+  precisely which pairs require further analysis.  A practitioner can then
+  either redesign compensation to be canonical for the overlapping invariants
+  or add coordination only for the interacting event types.
+\item For event types that share footprints but whose normalized outcomes
+  agree by domain-specific reasoning (e.g., both repairs clamp to the same
+  bound), CC1 can be verified by case analysis restricted to the overlapping
+  states.  The footprint calculus reduces the case space.
+\end{enumerate}
+
+%========================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have identified \emph{normalization confluence} as a third structural regime
+for coordination-free convergence in distributed systems, alongside operation
+commutativity (CRDTs) and invariant confluence (I-confluence).  The regime is
+characterized by two conditions: well-founded compensation (WFC), which
+ensures termination, and compensation commutativity (CC), which ensures
+confluence.  Under both, the governance rewrite system has unique normal forms
+by Newman's Lemma, and all processors consuming the same events converge to
+the same valid state.  A uniform bound on compensation depth (UBC) additionally
+guarantees constant per-event overhead.  Both conditions are necessary: without
+UBC, compensation depth is unbounded; without CC, different orders reach
+different valid states.
+
+To make CC practically verifiable, we developed a verification calculus that
+reduces the global CC obligation to local checks.  Invariant footprints
+identify which invariants each event can affect; decomposable repair ensures
+per-invariant fixes commute; and product composition enables modular
+verification across semantic modules.  Together, these convert
+``compensate-and-converge'' from a convergence theorem into a verifiable
+design pattern with tractable proof obligations.
+
+Compensation commutativity is strictly weaker than the operation commutativity
+required by CRDTs: operations need not commute, only their compensated results.
+The gap between these two conditions is precisely the design space that
+normalization confluence occupies---systems where operations are
+non-commutative, invariant-violating, but convergent under repair.
+
+The three regimes partition the coordination-free design space by where
+convergence is guaranteed: in the operations, in the invariants, or in the
+normalization rewrite system.  This last regime formalizes a pattern that
+practitioners use implicitly---post-application repair as a convergence
+mechanism---and provides both the structural conditions under which it is
+sound and a calculus for verifying those conditions.
+
+\section*{Acknowledgments}
+
+I thank my wife, Yuval, for her patience and support throughout this research.
+
+\begin{thebibliography}{99}
+
+\bibitem{newman1942}
+M.~H.~A. Newman,
+``On theories with a combinatorial definition of `equivalence',''
+\emph{Annals of Mathematics}, vol.~43, no.~2, pp.~223--243, 1942.
+
+\bibitem{shapiro2011crdt}
+M.~Shapiro, N.~Pregui\c{c}a, C.~Baquero, and M.~Zawirski,
+``A comprehensive study of convergent and commutative replicated data types,''
+\emph{INRIA Research Report RR-7506}, 2011.
+
+\bibitem{hellerstein2010declarative}
+J.~M.~Hellerstein,
+``The declarative imperative: experiences and conjectures in distributed logic,''
+\emph{SIGMOD Record}, vol.~39, no.~1, pp.~5--19, 2010.
+
+\bibitem{ameloot2013relational}
+T.~J.~Ameloot, F.~Neven, and J.~Van~den~Bussche,
+``Relational transducers for declarative networking,''
+\emph{Journal of the ACM}, vol.~60, no.~2, pp.~1--38, 2013.
+
+\bibitem{bailis2014coordination}
+P.~Bailis, A.~Fekete, M.~J.~Franklin, A.~Ghodsi, J.~M.~Hellerstein, and I.~Stoica,
+``Coordination avoidance in database systems,''
+\emph{Proc.\ VLDB Endowment}, vol.~8, no.~3, pp.~185--196, 2014.
+
+\bibitem{baader1998term}
+F.~Baader and T.~Nipkow,
+\emph{Term Rewriting and All That},
+Cambridge University Press, 1998.
+
+\bibitem{vogels2009eventually}
+W.~Vogels,
+``Eventually consistent,''
+\emph{Communications of the ACM}, vol.~52, no.~1, pp.~40--44, 2009.
+
+\bibitem{garcia1987sagas}
+H.~Garcia-Molina and K.~Salem,
+``Sagas,''
+\emph{Proc.\ ACM SIGMOD International Conference on Management of Data}, pp.~249--259, 1987.
+
+\bibitem{lee1987synchronous}
+E.~A.~Lee and D.~G.~Messerschmitt,
+``Synchronous data flow,''
+\emph{Proceedings of the IEEE}, vol.~75, no.~9, pp.~1235--1245, 1987.
+
+\bibitem{kahn1974semantics}
+G.~Kahn,
+``The semantics of a simple language for parallel programming,''
+\emph{Information Processing}, pp.~471--475, 1974.
+
+\bibitem{akidau2015dataflow}
+T.~Akidau, R.~Bradshaw, C.~Chambers, et~al.,
+``The Dataflow Model: A practical approach to balancing correctness, latency, and cost in massive-scale, unbounded, out-of-order data processing,''
+\emph{Proc.\ VLDB Endowment}, vol.~8, no.~12, pp.~1792--1803, 2015.
+
+\bibitem{lamport1978time}
+L.~Lamport,
+``Time, clocks, and the ordering of events in a distributed system,''
+\emph{Communications of the ACM}, vol.~21, no.~7, pp.~558--565, 1978.
+
+\end{thebibliography}
+
+\end{document}
