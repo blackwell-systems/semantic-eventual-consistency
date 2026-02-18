@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18677401.svg)](https://doi.org/10.5281/zenodo.18677401)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18677400.svg)](https://doi.org/10.5281/zenodo.18677400)
 
 # Normalization Confluence for Registry-Governed Stream Processing
 
@@ -24,7 +24,7 @@ We formalize registry-governed stream processing, where an external registry of 
   title   = {Normalization Confluence for Registry-Governed Stream Processing},
   author  = {Blackwell, Dayna},
   year    = {2026},
-  doi     = {10.5281/zenodo.18677401},
+  doi     = {10.5281/zenodo.18677400},
   note    = {Technical Report},
   license = {CC-BY-4.0}
 }
