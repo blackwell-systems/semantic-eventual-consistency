@@ -1,27 +1,43 @@
+# Semantic Eventual Consistency Research
+
+Research on coordination-free convergence in distributed systems through **normalization confluence** - a third structural regime alongside operation commutativity (CRDTs) and invariant confluence.
+
+**Dayna Blackwell** | dayna@blackwell-systems.com
+
+---
+
+## Overview
+
+Traditional approaches to coordination-free convergence require either:
+1. **Operation commutativity** (CRDTs) - operations must be designed to commute
+2. **Invariant confluence** - operations must preserve invariants in all orderings
+
+This research identifies a third regime: **normalization confluence**, where operations may be non-commutative and may violate invariants, yet systems converge through compensation. The key insight is that convergence is a property of the normalization rewrite system (event application + invariant repair), not the operations themselves.
+
+This repository contains theoretical foundations, proofs, and companion verification tools.
+
+---
+
+## Publications
+
+### Normalization Confluence in Federated Registry Networks
+
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18677400.svg)](https://doi.org/10.5281/zenodo.18677400)
 
-# Normalization Confluence for Registry-Governed Stream Processing
+**Extended version with federated systems**
 
-**Dayna Blackwell, 2026**
+Extends normalization confluence to multi-organizational environments where registries are connected by morphisms encoding cross-organizational semantic constraints. For tree-shaped morphism networks (directed forests), proves federated convergence requires only validity preservation of the morphisms - all other conditions derive from network acyclicity via an authority argument: the source's unique normal form deterministically fixes the target's shared component.
 
-## Abstract
+Includes self-contained treatment of single-registry model (governance rewrite system, convergence theorem via Newman's Lemma, necessity results, complexity analysis, and verification calculus).
 
-Coordination-free convergence in distributed systems has been achieved through two structural regimes: operation commutativity (CRDTs) and invariant confluence (I-confluence). This paper identifies a third regime - **normalization confluence** - where non-commutative operations that may violate invariants converge through compensation.
+**Files:**
+- `normalization_confluence_in_federated_registry_networks.pdf` - Full paper (1939 lines)
+- `normalization_confluence_in_federated_registry_networks.tex` - LaTeX source
 
-We formalize registry-governed stream processing, where an external registry of invariant predicates defines valid states and a compensation operator repairs violations. Two structural conditions - well-founded compensation (WFC) and compensation commutativity (CC) - ensure termination and confluence. Under both, Newman's Lemma guarantees unique normal forms: any two processors consuming the same events agree on a valid state, regardless of order.
-
-**Key contributions:**
-- Formalization of normalization confluence regime
-- Proof of termination (WFC) and confluence (CC)
-- Verification calculus reducing global CC to local checks
-- Uniformly bounded compensation (UBC) for O(log n) total cost
-- Product composition theorem for modular verification
-
-## Citation
-
+**Citation:**
 ```bibtex
-@techreport{blackwell2026normalization,
-  title   = {Normalization Confluence for Registry-Governed Stream Processing},
+@techreport{blackwell2026federated,
+  title   = {Normalization Confluence in Federated Registry Networks},
   author  = {Blackwell, Dayna},
   year    = {2026},
   doi     = {10.5281/zenodo.18677400},
@@ -30,11 +46,121 @@ We formalize registry-governed stream processing, where an external registry of 
 }
 ```
 
-## Files
+### Normalization Confluence for Registry-Governed Stream Processing
 
-- `normalization_confluence_2026.pdf` - Full technical report
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18671870.svg)](https://doi.org/10.5281/zenodo.18671870)
+
+**Core single-registry foundation**
+
+Identifies normalization confluence as a third regime for coordination-free convergence in distributed systems. Formalizes registry-governed stream processing, proves termination and confluence under well-founded compensation (WFC) and compensation commutativity (CC), and develops a verification calculus for practical CC checking. Shows uniformly bounded compensation (UBC) yields constant per-event overhead matching conventional stream processing.
+
+**Files:**
+- `normalization_confluence_2026.pdf` - Core paper (1581 lines)
 - `normalization_confluence_2026.tex` - LaTeX source
+
+**Citation:**
+```bibtex
+@techreport{blackwell2026normalization,
+  title   = {Normalization Confluence for Registry-Governed Stream Processing},
+  author  = {Blackwell, Dayna},
+  year    = {2026},
+  doi     = {10.5281/zenodo.18671870},
+  note    = {Technical Report},
+  license = {CC-BY-4.0}
+}
+```
+
+---
+
+## Key Concepts
+
+### Normalization Confluence
+
+A coordination-free convergence regime where:
+- **Operations may violate invariants** (unlike invariant confluence)
+- **Operations need not commute** (unlike CRDTs)
+- **Compensation restores validity** after each operation
+- **Compensated results commute** even though operations don't
+
+Under two conditions - well-founded compensation (WFC) and compensation commutativity (CC) - all processors consuming the same events converge to the same valid state regardless of application order.
+
+### Registry-Governed Streams
+
+A **registry** is any authoritative definition of validity external to the stream processor: policy engines, constraint services, schema validators, compliance controllers. The registry provides:
+- **Invariant predicates** defining valid states
+- **Compensation operator** repairing violations deterministically
+
+Events are applied in any order; the registry normalizes states after each event. The governance rewrite system interleaves event application with compensation.
+
+### Federated Registries
+
+Multiple registries connected by **morphisms** encoding cross-organizational constraints. A manufacturer's specifications constrain supplier capabilities; a regulator's rules constrain bank behavior.
+
+For **tree-shaped networks** (directed forests where each non-root has one incoming morphism), federated convergence follows from component convergence + morphism validity preservation. The **authority argument** eliminates nondeterminism: source normal forms deterministically control target shared components.
+
+---
+
+## Companion Tools
+
+### gsm - Governed State Machines
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/blackwell-systems/gsm.svg)](https://pkg.go.dev/github.com/blackwell-systems/gsm)
+
+**Go library for building verified convergent state machines**
+
+- Build-time WFC/CC verification via exhaustive state-space enumeration
+- O(1) runtime event application through precomputed lookup tables
+- Fluent builder API for defining state machines in Go code
+- Portable JSON export for multi-language runtime support
+
+```go
+machine, report, err := builder.Build()
+// Convergence: GUARANTEED (verified exhaustively)
+
+s = machine.Apply(s, "ship_item") // O(1) table lookup
+```
+
+Repository: [github.com/blackwell-systems/gsm](https://github.com/blackwell-systems/gsm)
+
+### nccheck - Normalization Confluence Verifier
+
+**YAML-based verification tool for finite-state registry specifications**
+
+Reference implementation proving the verification procedure from the paper is mechanizable. Exhaustively checks WFC and CC for registry specs, provides counterexamples when convergence fails.
+
+```bash
+nccheck examples/disjoint.yaml      # PASS - independent subsystems
+nccheck examples/permissions.yaml   # FAIL - cross-variable invariants
+```
+
+Repository: [github.com/blackwell-systems/nccheck](https://github.com/blackwell-systems/nccheck)
+
+---
+
+## Three Regimes of Coordination-Free Convergence
+
+| Regime | Requirement | Guarantees | Design Space |
+|--------|-------------|------------|--------------|
+| **Operation Commutativity** (CRDTs) | Operations commute algebraically | Convergence without coordination | Commutative operations only |
+| **Invariant Confluence** | Operations preserve invariants in all orderings | Convergence without repair | Invariant-preserving operations only |
+| **Normalization Confluence** | Compensated results commute (operations need not) | Convergence through repair | Non-commutative, invariant-violating operations |
+
+Normalization confluence occupies the gap between CRDTs (requires commutativity) and I-confluence (requires invariant preservation). It permits operations that satisfy neither, provided compensation commutes.
+
+---
+
+## Future Work
+
+This repository will include:
+- **Federation verification** - Multi-registry convergence checking
+- **Runtime monitoring** - Divergence detection for production systems
+- **Compensation strategies** - Patterns for achieving CC in common scenarios
+- **Case studies** - Real-world applications of normalization confluence
+
+---
 
 ## License
 
-CC-BY-4.0
+All papers: CC-BY-4.0
+
+All code (tools): MIT License
