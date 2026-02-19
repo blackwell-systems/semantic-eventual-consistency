@@ -151,16 +151,6 @@ Normalization confluence occupies the gap between CRDTs (requires commutativity)
 
 ---
 
-## Future Work
-
-This repository will include:
-- **Federation verification** - Multi-registry convergence checking
-- **Runtime monitoring** - Divergence detection for production systems
-- **Compensation strategies** - Patterns for achieving CC in common scenarios
-- **Case studies** - Real-world applications of normalization confluence
-
----
-
 ## License
 
 All papers: CC-BY-4.0
