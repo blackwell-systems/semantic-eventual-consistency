@@ -502,7 +502,7 @@ The registry $R$ satisfies:
 \end{enumerate}
 \end{axiom}
 
-\begin{remark}[Relationship to CRDT Commutativity]
+\begin{remark}[CRDT Commutativity]
 \label{rem:crdt-comparison}
 CRDT commutativity requires
 $\mathrm{apply}(e_1, \mathrm{apply}(e_2, \sigma)) =
@@ -897,7 +897,7 @@ reach the same normal form $(\sigma^*, \varnothing)$.  Therefore
 $\Psi_{P_1}(t) = \Psi_{P_2}(t) = \sigma^*$.
 \end{proof}
 
-\begin{remark}[Semantic Projection as a Set Function]
+\begin{remark}[Semantic Projection]
 \label{rem:set-function}
 The theorem implies that the mapping $F(E) = \nf(\sigma_0, E)$---the unique
 normal form of the governance rewrite system starting from $(\sigma_0, E)$---is
@@ -1423,7 +1423,7 @@ The regimes partition the coordination-free design space by \emph{where}
 convergence is guaranteed: in the operations (regime~1), in the invariants
 (regime~2), or in the normalization rewrite system (regime~3).
 
-\begin{remark}[Convergence as a Property of the Rewrite System]
+\begin{remark}[Convergence as Rewrite Property]
 \label{rem:rewrite-property}
 The conventional literature frames convergence as a property of operations:
 operations must commute, or operations must preserve invariants.
