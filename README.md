@@ -1,8 +1,8 @@
-# Semantic Eventual Consistency Research
+# Normalization Confluence
 
 [![Blackwell Systems™](https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg)](https://github.com/blackwell-systems)
 
-Research on coordination-free convergence in distributed systems through **normalization confluence** - a third structural regime alongside operation commutativity (CRDTs) and invariant confluence.
+Research on coordination-free convergence in distributed systems through normalization confluence - a third structural regime alongside operation commutativity (CRDTs) and invariant confluence.
 
 **Dayna Blackwell** | dayna@blackwell-systems.com
 
